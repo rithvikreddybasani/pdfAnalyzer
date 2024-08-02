@@ -1,8 +1,6 @@
 streamlit
 PyPDF2
-langchain_google_genai
-google.generativeai
-langchain.vectorstores
-langchain_google_genai
-langchain.chains.question_answering
-langchain.prompts
+langchain
+langchain-google-genai
+google-generativeai
+faiss-cpu
