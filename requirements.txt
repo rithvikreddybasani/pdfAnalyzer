@@ -1,5 +1,5 @@
 streamlit
-PyPDF2
+PdfReader
 langchain
 langchain-google-genai
 google-generativeai
