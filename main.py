@@ -1,15 +1,18 @@
 import os
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import streamlit as st
+import google.generativeai as genai
 from langchain.vectorstores import FAISS
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
-import streamlit as st
-from transformers import pipeline
+from transformers import pipeline  # Import the Hugging Face pipeline
 
-# Load the Hugging Face question-answering pipeline
-qa_pipeline = pipeline("question-answering", model="distilbert-base-uncased-distilled-squad")
+# Set up Google API key
+os.environ['GOOGLE_API_KEY'] = "AIzaSyD_5oPOrWDWIuseBgeFZbVYDt8Aj7jGn_U"
+genai.configure(api_key=os.environ['GOOGLE_API_KEY'])
 
 # Function to read all PDF files and return text
 def get_pdf_text(pdf_docs):
@@ -23,40 +26,59 @@ def get_pdf_text(pdf_docs):
 # Function to split text into chunks
 def get_text_chunks(text):
     splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
-    return splitter.split_text(text)  # list of strings
+    chunks = splitter.split_text(text)
+    return chunks  # List of strings
 
-# Function to create a vector store from text chunks
+# Function to get embeddings for each chunk
 def get_vector_store(chunks):
-    embeddings = HuggingFaceEmbeddings(model="sentence-transformers/all-MiniLM-L6-v2")  # Use a suitable model for embeddings
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")  # type: ignore
     vector_store = FAISS.from_texts(chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
 
+# Function to get the conversational chain
+def get_conversational_chain():
+    prompt_template = """
+    Answer the question as detailed as possible from the provided context, make sure to provide all the details, if the answer is not in
+    provided context just say, "answer is not available in the context", don't provide the wrong answer\n\n
+    Context:\n {context}?\n
+    Question: \n{question}\n
+
+    Answer:
+    """
+    model = ChatGoogleGenerativeAI(model="gemini-pro", client=genai, temperature=0.3)
+    prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+    chain = load_qa_chain(llm=model, chain_type="stuff", prompt=prompt)
+    return chain
+
 # Function to clear chat history
 def clear_chat_history():
-    st.session_state.messages = [{"role": "assistant", "content": "Upload some PDFs and ask me a question."}]
+    st.session_state.messages = [{"role": "assistant", "content": "upload some pdfs and ask me a question"}]
 
-# Function to process user input and get response from the model
+# Function for user input processing using Hugging Face
 def user_input(user_question):
-    embeddings = HuggingFaceEmbeddings(model="sentence-transformers/all-MiniLM-L6-v2")  # Use a suitable model for embeddings
-    new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+    # Load the vector store
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")  # type: ignore
+    new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True) 
     docs = new_db.similarity_search(user_question)
 
-    # Combine documents into context for the QA model
-    context = " ".join([doc.page_content for doc in docs])
-    
-    # Use the Hugging Face model to answer the question
-    result = qa_pipeline(question=user_question, context=context)
-    
-    return result['answer']
+    # Prepare context for Hugging Face QA model
+    context = " ".join([doc.page_content for doc in docs])  # Concatenate the contents of the retrieved documents
 
-# Main function to run the Streamlit app
+    # Load the Hugging Face QA pipeline
+    hf_qa_pipeline = pipeline("question-answering", model="distilbert-base-uncased-distilled-squad")
+    
+    # Get the answer from Hugging Face
+    response = hf_qa_pipeline(question=user_question, context=context)
+
+    return response['answer']  # Return only the answer
+
 def main():
-    st.set_page_config(page_title="Hugging Face PDF Chatbot", page_icon="🤖")
+    st.set_page_config(page_title="Gemini PDF Chatbot", page_icon="🤖")
 
     # Sidebar for uploading PDF files
     with st.sidebar:
         st.title("Menu:")
-        pdf_docs = st.file_uploader("Upload your PDF Files", accept_multiple_files=True)
+        pdf_docs = st.file_uploader("Upload your PDF Files and Click on the Submit & Process Button", accept_multiple_files=True)
         if st.button("Submit & Process"):
             with st.spinner("Processing..."):
                 raw_text = get_pdf_text(pdf_docs)
@@ -65,31 +87,33 @@ def main():
                 st.success("Done")
 
     # Main content area for displaying chat messages
-    st.title("Chat with PDF files using Hugging Face 🤖")
+    st.title("Chat with PDF files using Gemini🤖")
+    st.write("Welcome to the chat!")
     st.sidebar.button('Clear Chat History', on_click=clear_chat_history)
 
-    # Chat input
-    if "messages" not in st.session_state:
-        st.session_state.messages = [{"role": "assistant", "content": "Upload some PDFs and ask me a question."}]
+    # Initialize chat messages
+    if "messages" not in st.session_state.keys():
+        st.session_state.messages = [{"role": "assistant", "content": "upload some pdfs and ask me a question"}]
 
     # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.write(message["content"])
 
-    if prompt := st.chat_input("Type your question here..."):
+    # Chat input
+    if prompt := st.chat_input():
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.write(prompt)
 
-        # Display chat messages and bot response
-        if st.session_state.messages[-1]["role"] != "assistant":
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    response = user_input(prompt)
-                    st.write(response)
-            # Append the assistant's response to the chat history
-            st.session_state.messages.append({"role": "assistant", "content": response})
+    # Display chat messages and bot response
+    if st.session_state.messages[-1]["role"] != "assistant":
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                response = user_input(prompt)
+                message = {"role": "assistant", "content": response}
+                st.session_state.messages.append(message)
+                st.write(response)  # Display the response
 
 if __name__ == "__main__":
     main()
